@@ -1,0 +1,9 @@
+requests>=2.31.0
+websocket-client>=1.7.0
+yfinance>=0.2.40
+pandas>=2.2.0
+numpy>=1.26.0
+pytz>=2024.1
+matplotlib>=3.8.0
+# Optional — Windows/VPS only for exact MT5 match:
+# MetaTrader5>=5.0.45
