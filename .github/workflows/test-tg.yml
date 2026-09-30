@@ -1,0 +1,26 @@
+name: Test Telegram
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-tg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Send test message
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "
+          import os, requests
+          t = os.getenv('TELEGRAM_BOT_TOKEN')
+          c = os.getenv('TELEGRAM_CHAT_ID')
+          r = requests.post(f'https://api.telegram.org/bot{t}/sendMessage', json={'chat_id': c, 'text': '✅ XAUUSD AGI — Telegram OK!'})
+          print(r.status_code, r.text)
+          "
