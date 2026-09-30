@@ -20,7 +20,7 @@ import numpy as np
 from config import (
     STATE_DIR, load_json, save_json, resample_ohlcv, get_logger,
 )
-from core import PrecisionEntry, RegimeState, PositionManager  # noqa: F401 (re-export)
+from core import PrecisionEntry, RegimeState
 
 log = get_logger("integrations")
 
