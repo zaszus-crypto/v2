@@ -127,7 +127,7 @@ def format_alert(signal, e, atr, consensus, grade, score, regime, anomaly, mem, 
 ━━━━━━━━━━━━━━━━━━━━━
 <b>Entry</b> ({esc(e.entry_type)}): <code>{e.entry_low:.2f}-{e.entry_high:.2f}</code>
 <b>Ideal</b>: <code>{e.entry_ideal:.2f}</code>
-<b>SL</b>: <code>{e.sl:.2f}</code> ({esc(e.sl_reason)})
+<b>SL</b>: <code>{e.sl:.2f}</code>
 <b>Risk</b>: <code>{e.risk_points:.2f}pts</code> = <b>{rp:.1f}%</b> (${ru:.2f})
 ━━━━━━━━━━━━━━━━━━━━━
 🎯 TP1: <code>{e.tp1:.2f}</code> ({e.rr_tp1}R)
@@ -138,7 +138,6 @@ def format_alert(signal, e, atr, consensus, grade, score, regime, anomaly, mem, 
 ⚡ Anomaly: {anomaly.score:.2f}
 🏛️ Council: {esc(dv.get('verdict', 'ABSTAIN'))} ({dv.get('confidence_mult', 1.0)}x)
 ⏰ <i>{datetime.datetime.now(WIB).strftime('%d %b %Y | %H:%M WIB')}</i>"""
-
 
 # =============================================================================
 # SCAN ENGINE WITH FAILOVER
