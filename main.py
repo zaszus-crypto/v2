@@ -3,15 +3,6 @@
 XAUUSD AGI v35.1 - PRODUCTION GRADE QUANT BOT
 — scan, alert, report, backtest, tuner, CLI, zip builder
 =============================================================================
-Usage:
-  python main.py scan
-  python main.py loop
-  python main.py report
-  python main.py positions
-  python main.py backtest --days 90
-  python main.py tune --days 90
-  python main.py zip
-=============================================================================
 """
 import os
 import sys
@@ -130,7 +121,7 @@ def format_alert(signal, e, atr, consensus, grade, score, regime, anomaly, mem, 
 {banner}
 ━━━━━━━━━━━━━━━━━━━━━
 📊 Confluence: [{bar}] {consensus:.1f}% (Score {score:.1f})
-🌊 Regime: {esc(regime.regime.value)} ({regime.confidence:.2f})
+🌊 Regime: {esc(regime.regime)} ({regime.confidence:.2f})
 🎯 Precision: {e.precision_score:.1f}/100 ({esc(e.precision_grade)})
 📡 Feed: {esc(source)}{off} | <code>{price:.2f}</code>
 ━━━━━━━━━━━━━━━━━━━━━
@@ -198,8 +189,8 @@ def run_scan(force: bool = False) -> int:
     for name, fn in ENGINES:
         try:
             sc, w = fn(df_m30)
-            t_mult = tracker.get_weight_mult(regime.regime.value, name)
-            r_prior = regime_engine_prior(regime.regime.value, name)
+            t_mult = tracker.get_weight_mult(regime.regime, name)
+            r_prior = regime_engine_prior(regime.regime, name)
             eff = w * t_mult * r_prior
             states[name] = {"sc": sc, "weight": eff}
             if sc > 0:
@@ -225,7 +216,7 @@ def run_scan(force: bool = False) -> int:
 
     consensus = (max(buy_w, sell_w) / (buy_w + sell_w)) * 100.0
     signal = "BUY" if buy_w > sell_w else "SELL"
-    adj = consensus * meta.penalty(regime.regime.value)
+    adj = consensus * meta.penalty(regime.regime)
 
     a_conf, a_prec = adaptive.adjusted_thresholds()
     if adj < a_conf and not (force or CFG.force_run):
@@ -261,7 +252,7 @@ def run_scan(force: bool = False) -> int:
 
     dv = {"verdict": "AGREE", "confidence_mult": 1.0, "notes": "local"}
     if CFG.gemini_key:
-        dv = debate(signal, price, adj, regime.regime.value, h1_trend, h4_trend, 50.0, atr_val, mem_stats, anomaly.score, CFG.gemini_key, CFG.gemini_model)
+        dv = debate(signal, price, adj, regime.regime, h1_trend, h4_trend, 50.0, atr_val, mem_stats, anomaly.score, CFG.gemini_key, CFG.gemini_model)
         if dv.get("verdict") == "DISAGREE" and not (force or CFG.force_run):
             log.info(f"Council consensus rejected: {dv.get('notes')}")
             return 0
@@ -495,7 +486,7 @@ def run_backtest(df_m30: pd.DataFrame, df_h1: Optional[pd.DataFrame] = None, df_
 
         r.trades.append({
             "pnl_r": pnl, "grade": g["grade"],
-            "regime": reg.regime.value, "exit_reason": reason,
+            "regime": reg.regime, "exit_reason": reason,
         })
         last = fi
         i = fi + 1
