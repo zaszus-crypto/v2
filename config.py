@@ -1,6 +1,17 @@
 import os
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+# Pindahkan fungsi pembantu ke atas agar terbaca sebelum kelas Config diinisialisasi
+def field_parse_chats(val: str) -> list:
+    if not val:
+        return []
+    return [c.strip() for c in val.split(",") if c.strip()]
+
+def field_parse_users(val: str) -> list:
+    if not val:
+        return []
+    return [int(u.strip()) for u in val.split(",") if u.strip().isdigit()]
 
 @dataclass
 class Config:
@@ -22,23 +33,13 @@ class Config:
     log_dir: str = "logs"
     state_dir: str = ".state_cache"
     tg_token: str = os.getenv("TG_TOKEN", "")
-    tg_chats: list = field_parse_chats(os.getenv("TG_CHATS", ""))
-    tg_users: list = field_parse_users(os.getenv("TG_USERS", ""))
+    tg_chats: list = field(default_factory=lambda: field_parse_chats(os.getenv("TG_CHATS", "")))
+    tg_users: list = field(default_factory=lambda: field_parse_users(os.getenv("TG_USERS", "")))
     gemini_key: str = os.getenv("GEMINI_KEY", "")
     gemini_model: str = "gemini-2.5-flash"
     healthcheck: str = os.getenv("HEALTHCHECK_URL", "")
     account_equity: float = float(os.getenv("ACCOUNT_EQUITY", "10000.0"))
     risk_override: float = float(os.getenv("RISK_OVERRIDE", "0.0"))
-
-def field_parse_chats(val: str) -> list:
-    if not val:
-        return []
-    return [c.strip() for c in val.split(",") if c.strip()]
-
-def field_parse_users(val: str) -> list:
-    if not val:
-        return []
-    return [int(u.strip()) for u in val.split(",") if u.strip().isdigit()]
 
 STATE_DIR = ".state_cache"
 
@@ -61,7 +62,6 @@ def get_logger(name: str, level: str = "INFO", log_dir: str = "logs"):
     return logger
 
 def is_news_blocked(block_min: int = 30) -> tuple:
-    # Integrasi kalender ekonomi placeholder aman dari error
     return False, "Normal Market Conditions"
 
 def resolve_grade_to_risk(grade: str, override: float, equity: float) -> tuple:
