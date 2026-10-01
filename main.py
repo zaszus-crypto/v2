@@ -1,6 +1,7 @@
 """
 =============================================================================
-MAIN — scan, alert, report, backtest, tuner, CLI, zip builder
+XAUUSD AGI v35.1 - PRODUCTION GRADE QUANT BOT
+— scan, alert, report, backtest, tuner, CLI, zip builder
 =============================================================================
 Usage:
   python main.py scan
@@ -29,17 +30,21 @@ import pandas as pd
 import pytz
 
 from config import (
-    load_config, get_logger, STATE_DIR, is_news_blocked,
-    resolve_grade_to_risk, grade_at_least,
+    load_config, get_logger, STATE_DIR,
+    is_news_blocked, resolve_grade_to_risk, grade_at_least,
 )
 from core import (
-    detect_regime, detect_anomaly, wilder_atr_value, Memory, Calibrator,
-    MetaLearner, EngineTracker, ENGINES, grade_signal,
-    calculate_precise_entry, regime_engine_prior, AdaptiveThreshold,
+    detect_regime, detect_anomaly,
+    wilder_atr_value, Memory, Calibrator,
+    MetaLearner, EngineTracker, ENGINES,
+    grade_signal, calculate_precise_entry,
+    regime_engine_prior, AdaptiveThreshold,
 )
 from integrations import (
-    get_data, debate, send_text, send_photo, esc, is_paused, tg_poll,
-    PositionManager, build_snapshot, build_equity_chart,
+    get_data, debate, send_text, send_photo,
+    esc, is_paused, tg_poll,
+    PositionManager, build_snapshot,
+    build_equity_chart,
 )
 
 WIB = pytz.timezone("Asia/Jakarta")
@@ -51,57 +56,64 @@ log = get_logger("main", CFG.log_level, CFG.log_dir)
 
 
 # =============================================================================
-# DB
+# DB & FAILOVER STATE
 # =============================================================================
 def init_db():
-    conn = sqlite3.connect(DB_FILE, timeout=15.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts REAL, direction TEXT, price REAL, zone REAL,
-            grade TEXT, entry REAL, sl REAL, tp1 REAL,
-            source TEXT, status TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        conn = sqlite3.connect(DB_FILE, timeout=15.0)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL, direction TEXT, price REAL, zone REAL,
+                grade TEXT, entry REAL, sl REAL, tp1 REAL,
+                source TEXT, status TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.error(f"Database initialization error: {e}")
 
 
-def is_duplicate(direction: str, price: float, cooldown_min: int,
-                 tol: float = 2.5) -> bool:
+def is_duplicate(direction: str, price: float, cooldown_min: int, tol: float = 2.5) -> bool:
     zone = round(price / 5.0) * 5.0
     now = time.time()
-    with closing(sqlite3.connect(DB_FILE, timeout=15.0)) as c:
-        rows = c.execute(
-            "SELECT ts, direction, price, zone FROM signals ORDER BY id DESC LIMIT 10"
-        ).fetchall()
-    for ts, ld, lp, lz in rows:
-        if (now - ts) / 60.0 < cooldown_min:
-            if direction == ld and abs(zone - lz) < 1e-4:
-                return True
-            if direction != ld and abs(price - lp) < tol:
-                return True
+    try:
+        with closing(sqlite3.connect(DB_FILE, timeout=15.0)) as c:
+            rows = c.execute(
+                "SELECT ts, direction, price, zone FROM signals ORDER BY id DESC LIMIT 10"
+            ).fetchall()
+        for ts, ld, lp, lz in rows:
+            if (now - ts) / 60.0 < cooldown_min:
+                if direction == ld and abs(zone - lz) < 1e-4:
+                    return True
+                if direction != ld and abs(price - lp) < tol:
+                    return True
+    except Exception as e:
+        log.warning(f"Duplicate check warning: {e}")
     return False
 
 
-def save_signal(direction: str, price: float, grade: str,
-                entry: float, sl: float, tp1: float, source: str):
-    with closing(sqlite3.connect(DB_FILE, timeout=15.0)) as c:
-        c.execute(
-            "INSERT INTO signals (ts, direction, price, zone, grade, entry, sl, tp1, source, status) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (time.time(), direction, float(price), round(price / 5.0) * 5.0,
-             grade, float(entry), float(sl), float(tp1), source, "ACTIVE"),
-        )
-        c.commit()
+def save_signal(direction: str, price: float, grade: str, entry: float, sl: float, tp1: float, source: str):
+    try:
+        with closing(sqlite3.connect(DB_FILE, timeout=15.0)) as c:
+            c.execute(
+                "INSERT INTO signals (ts, direction, price, zone, grade, entry, sl, tp1, source, status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (time.time(), direction, float(price), round(price / 5.0) * 5.0,
+                 grade, float(entry), float(sl), float(tp1), source, "ACTIVE"),
+            )
+            c.commit()
+    except Exception as e:
+        log.error(f"Failed to save signal: {e}")
 
 
 # =============================================================================
-# ALERT
+# ALERT FORMATTING
 # =============================================================================
-def format_alert(signal, e, atr, consensus, grade, score, regime,
-                 anomaly, mem, dv, source, price, offset, risk_info) -> str:
+def format_alert(signal, e, atr, consensus, grade, score, regime, anomaly, mem, dv, source, price, offset, risk_info) -> str:
     banner = {
         "A Super": "🚀 <b>GRADE A SUPER (PRIME)</b>\n💰 Risk 3.0% | Lot 3.0x",
         "A++":     "🔴 <b>GRADE A++ (HIGH CONVICTION)</b>\n💰 Risk 1.5% | Lot 1.5x",
@@ -138,20 +150,17 @@ def format_alert(signal, e, atr, consensus, grade, score, regime,
 
 
 # =============================================================================
-# SCAN
+# SCAN ENGINE WITH FAILOVER
 # =============================================================================
 def run_scan(force: bool = False) -> int:
     try:
-        source, offset, price, df_m15, df_h1, df_h4 = get_data(
+        source, offset, price, df_m30, df_h1, df_h4 = get_data(
             CFG.symbol_mt5, CFG.symbol_deriv, CFG.yahoo_ticker,
             CFG.yahoo_auto, CFG.yahoo_fallback, CFG.feed_timeout,
         )
-        log.info(
-            f"Feed={source} off={offset:+.2f} p={price:.2f} "
-            f"M15={len(df_m15)} H1={len(df_h1)} H4={len(df_h4)}"
-        )
+        log.info(f"Feed={source} off={offset:+.2f} p={price:.2f} M30={len(df_m30)} H1={len(df_h1)} H4={len(df_h4)}")
     except Exception as e:
-        log.error(f"Feed fail: {e}")
+        log.error(f"Feed failover triggered due to exception: {e}")
         return 1
 
     memory = Memory()
@@ -167,30 +176,28 @@ def run_scan(force: bool = False) -> int:
     for ev in pm.update_all(price):
         log.info(f"POS: {ev}")
 
-    resolved = memory.resolve_open_trades(df_m15)
+    resolved = memory.resolve_open_trades(df_m30)
     if resolved:
         log.info(f"Memory trades resolved: {resolved}")
 
     if not (force or CFG.force_run):
         blocked, label = is_news_blocked(block_min=CFG.block_news_min)
         if blocked:
-            log.info(f"News window: {label}")
+            log.info(f"News window active: {label}")
             return 0
 
-    regime = detect_regime(df_m15)
-    anomaly = detect_anomaly(df_m15)
-    _, mem_stats = memory.query(df_m15, k=20)
+    regime = detect_regime(df_m30)
+    anomaly = detect_anomaly(df_m30)
+    _, mem_stats = memory.query(df_m30, k=20)
 
-    h1_trend = "BULLISH" if df_h1["close"].iloc[-1] > df_h1["close"].rolling(
-        50, min_periods=10).mean().iloc[-1] else "BEARISH"
-    h4_trend = "BULLISH" if df_h4["close"].iloc[-1] > df_h4["close"].rolling(
-        50, min_periods=10).mean().iloc[-1] else "BEARISH"
+    h1_trend = "BULLISH" if df_h1["close"].iloc[-1] > df_h1["close"].rolling(50, min_periods=10).mean().iloc[-1] else "BEARISH"
+    h4_trend = "BULLISH" if df_h4["close"].iloc[-1] > df_h4["close"].rolling(50, min_periods=10).mean().iloc[-1] else "BEARISH"
 
     buy_w = sell_w = 0.0
     states: dict = {}
     for name, fn in ENGINES:
         try:
-            sc, w = fn(df_m15)
+            sc, w = fn(df_m30)
             t_mult = tracker.get_weight_mult(regime.regime.value, name)
             r_prior = regime_engine_prior(regime.regime.value, name)
             eff = w * t_mult * r_prior
@@ -213,94 +220,75 @@ def run_scan(force: bool = False) -> int:
         sell_w += 1.2
 
     if (buy_w + sell_w) < 0.01 or abs(buy_w - sell_w) < 0.01:
-        log.info("Equilibrium.")
+        log.info("Market equilibrium reached. Holding.")
         return 0
 
     consensus = (max(buy_w, sell_w) / (buy_w + sell_w)) * 100.0
     signal = "BUY" if buy_w > sell_w else "SELL"
     adj = consensus * meta.penalty(regime.regime.value)
 
-    log.info(
-        f"Signal={signal} Conf={consensus:.1f}% Adj={adj:.1f}% "
-        f"Regime={regime.regime.value}"
-    )
-
     a_conf, a_prec = adaptive.adjusted_thresholds()
-    log.info(f"Adaptive thresholds: conf>={a_conf} prec>={a_prec} "
-             f"(n={len(adaptive.recent_results)})")
-
     if adj < a_conf and not (force or CFG.force_run):
-        log.info(f"Conf {adj:.1f}% < {a_conf}%")
+        log.info(f"Confluence {adj:.1f}% < required {a_conf}%")
         return 0
 
     if CFG.require_mtf and not (force or CFG.force_run):
-        ok = ((signal == "BUY" and h1_trend == "BULLISH")
-              or (signal == "SELL" and h1_trend == "BEARISH"))
+        ok = ((signal == "BUY" and h1_trend == "BULLISH") or (signal == "SELL" and h1_trend == "BEARISH"))
         if not ok:
-            log.info(f"MTF reject {signal}/{h1_trend}")
+            log.info(f"MTF alignment rejected {signal}/{h1_trend}")
             return 0
 
     if anomaly.is_anomaly and not (force or CFG.force_run):
-        log.info(f"Anomaly {anomaly.score:.2f}")
+        log.info(f"Anomaly detected score: {anomaly.score:.2f}")
         return 0
 
-    atr_val = wilder_atr_value(df_m15, 14)
-    g = grade_signal(adj, signal, states, h1_trend, h4_trend,
-                     atr_val, mem_stats, anomaly.score, regime.confidence)
+    atr_val = wilder_atr_value(df_m30, 14)
+    g = grade_signal(adj, signal, states, h1_trend, h4_trend, atr_val, mem_stats, anomaly.score, regime.confidence)
 
     if not grade_at_least(g["grade"], CFG.min_grade) and not (force or CFG.force_run):
-        log.info(f"Grade {g['grade']} < {CFG.min_grade}")
+        log.info(f"Grade {g['grade']} below minimum {CFG.min_grade}")
         return 0
 
-    e = calculate_precise_entry(df_m15, signal, price, h4_trend, h1_trend,
-                                adj, atr_val)
+    e = calculate_precise_entry(df_m30, signal, price, h4_trend, h1_trend, adj, atr_val)
 
     if e.precision_score < a_prec and not (force or CFG.force_run):
-        log.info(f"Precision {e.precision_score:.1f} < {a_prec}")
+        log.info(f"Precision score {e.precision_score:.1f} < {a_prec}")
         return 0
 
     if is_duplicate(signal, e.entry_ideal, CFG.cooldown_min) and not (force or CFG.force_run):
-        log.info("Duplicate.")
+        log.info("Duplicate signal within cooldown window.")
         return 0
 
     dv = {"verdict": "AGREE", "confidence_mult": 1.0, "notes": "local"}
     if CFG.gemini_key:
-        dv = debate(signal, price, adj, regime.regime.value, h1_trend, h4_trend,
-                    50.0, atr_val, mem_stats, anomaly.score,
-                    CFG.gemini_key, CFG.gemini_model)
+        dv = debate(signal, price, adj, regime.regime.value, h1_trend, h4_trend, 50.0, atr_val, mem_stats, anomaly.score, CFG.gemini_key, CFG.gemini_model)
         if dv.get("verdict") == "DISAGREE" and not (force or CFG.force_run):
-            log.info(f"Council reject: {dv.get('notes')}")
+            log.info(f"Council consensus rejected: {dv.get('notes')}")
             return 0
 
     risk_info = resolve_grade_to_risk(g["grade"], CFG.risk_override, CFG.account_equity)
 
-    memory.store(df_m15, regime, signal, e.entry_ideal, sl=e.sl, tp=e.tp1,
-                 extra={"grade": g["grade"],
-                        "engines": {k: v["sc"] for k, v in states.items()}})
-    save_signal(signal, e.entry_ideal, g["grade"], e.entry_ideal, e.sl,
-                e.tp1, source)
-    pm.open_position(signal, e.entry_ideal, e.sl, e.tp1, e.tp2, e.tp3,
-                     atr_val, g["grade"], e.lot_multiplier)
+    memory.store(df_m30, regime, signal, e.entry_ideal, sl=e.sl, tp=e.tp1, extra={"grade": g["grade"], "engines": {k: v["sc"] for k, v in states.items()}})
+    save_signal(signal, e.entry_ideal, g["grade"], e.entry_ideal, e.sl, e.tp1, source)
+    pm.open_position(signal, e.entry_ideal, e.sl, e.tp1, e.tp2, e.tp3, atr_val, g["grade"], e.lot_multiplier)
 
-    msg = format_alert(signal, e, atr_val, adj, g["grade"], g["score"],
-                       regime, anomaly, mem_stats, dv, source, price,
-                       offset, risk_info)
+    msg = format_alert(signal, e, atr_val, adj, g["grade"], g["score"], regime, anomaly, mem_stats, dv, source, price, offset, risk_info)
 
     if CFG.tg_token and CFG.tg_chats:
-        chart = build_snapshot(df_m15, signal, e, regime, source, price)
+        chart = build_snapshot(df_m30, signal, e, regime, source, price)
         if chart:
             send_photo(CFG.tg_token, msg[:1000], chart, CFG.tg_chats)
         send_text(CFG.tg_token, msg, CFG.tg_chats)
-        log.info("Telegram dispatched")
+        log.info("Telegram signal successfully dispatched.")
     else:
-        log.info("No TG configured. Printing.")
+        log.info("No Telegram credentials found. Printing to stdout.")
         print(msg)
 
     return 0
 
 
 # =============================================================================
-# REPORT
+# REPORT & POSITIONS
 # =============================================================================
 def build_report(with_chart: bool = False) -> str:
     pm = PositionManager()
@@ -319,7 +307,7 @@ def build_report(with_chart: bool = False) -> str:
         except Exception:
             pass
 
-    return (f"📊 <b>PERFORMANCE</b>\n"
+    return (f"📊 <b>PERFORMANCE REPORT</b>\n"
             f"Signals: <b>{sig_n}</b>\n"
             f"Positions total: <b>{rep['total']}</b> (active {rep['active']})\n"
             f"Winrate: <b>{rep['winrate']}%</b> ({rep['wins']}W/{rep['losses']}L)\n"
@@ -331,13 +319,11 @@ def positions_report() -> str:
     act = pm.active()
     if not act:
         return "No active positions."
-    return "\n".join(
-        [f"• {p.signal} @ {p.entry:.2f} SL {p.sl:.2f} | {p.grade}" for p in act]
-    )
+    return "\n".join([f"• {p.signal} @ {p.entry:.2f} SL {p.sl:.2f} | {p.grade}" for p in act])
 
 
 # =============================================================================
-# BACKTEST
+# BACKTESTING & TUNER MODULES
 # =============================================================================
 @dataclass
 class BacktestResult:
@@ -362,8 +348,7 @@ SLIPPAGE_ATR = 0.05
 COMMISSION_R = 0.02
 
 
-def _simulate(df: pd.DataFrame, idx: int, sig: str, entry_ideal: float,
-              sl: float, tp1: float, fill_wait: int = 8, hold: int = 24):
+def _simulate(df: pd.DataFrame, idx: int, sig: str, entry_ideal: float, sl: float, tp1: float, fill_wait: int = 8, hold: int = 24):
     n = len(df)
     fi = None
     fp = None
@@ -397,33 +382,31 @@ def _simulate(df: pd.DataFrame, idx: int, sig: str, entry_ideal: float,
     return fp, fi, float(df.iloc[io]["close"]), "TIMEOUT"
 
 
-def run_backtest(df_m15: pd.DataFrame, df_h1: Optional[pd.DataFrame] = None,
-                 df_h4: Optional[pd.DataFrame] = None,
-                 min_conf: float = 65.0, min_prec: float = 70.0,
-                 min_grade: str = "A", warmup: int = 150,
+def run_backtest(df_m30: pd.DataFrame, df_h1: Optional[pd.DataFrame] = None, df_h4: Optional[pd.DataFrame] = None,
+                 min_conf: float = 65.0, min_prec: float = 70.0, min_grade: str = "A", warmup: int = 150,
                  cooldown: int = 4, require_mtf: bool = True) -> BacktestResult:
     r = BacktestResult()
-    if df_m15 is None or len(df_m15) < warmup + 20:
+    if df_m30 is None or len(df_m30) < warmup + 20:
         return r
     if df_h1 is None:
-        df_h1 = df_m15
+        df_h1 = df_m30
     if df_h4 is None:
         df_h4 = df_h1
 
     last = -1000
     i = warmup
-    n = len(df_m15)
+    n = len(df_m30)
 
     while i < n - 10:
         if (i - last) < cooldown:
             i += 1
             continue
 
-        win = df_m15.iloc[max(0, i - 200): i + 1]
+        win = df_m30.iloc[max(0, i - 200): i + 1]
         reg = detect_regime(win)
 
-        if isinstance(df_m15.index, pd.DatetimeIndex):
-            ct = df_m15.index[i]
+        if isinstance(df_m30.index, pd.DatetimeIndex):
+            ct = df_m30.index[i]
             h1s = df_h1[df_h1.index < ct]
             h4s = df_h4[df_h4.index < ct]
         else:
@@ -475,8 +458,7 @@ def run_backtest(df_m15: pd.DataFrame, df_h1: Optional[pd.DataFrame] = None,
 
         sig = "BUY" if bw > sw else "SELL"
         if require_mtf:
-            if not ((sig == "BUY" and "BULLISH" in h1t)
-                    or (sig == "SELL" and "BEARISH" in h1t)):
+            if not ((sig == "BUY" and "BULLISH" in h1t) or (sig == "SELL" and "BEARISH" in h1t)):
                 i += 1
                 continue
 
@@ -493,7 +475,7 @@ def run_backtest(df_m15: pd.DataFrame, df_h1: Optional[pd.DataFrame] = None,
             continue
 
         r.total_signals += 1
-        fp, fi, ep, reason = _simulate(df_m15, i, sig, e.entry_ideal, e.sl, e.tp1)
+        fp, fi, ep, reason = _simulate(df_m30, i, sig, e.entry_ideal, e.sl, e.tp1)
 
         if fp is None:
             r.unfilled_orders += 1
@@ -548,63 +530,8 @@ def run_backtest(df_m15: pd.DataFrame, df_h1: Optional[pd.DataFrame] = None,
 
 
 # =============================================================================
-# AUTO TUNER
+# AUTO TUNER & ZIP UTILS
 # =============================================================================
-def _fitness(r: BacktestResult, min_trades: int = 12) -> float:
-    if r.filled_trades < min_trades:
-        return -999.0
-    pf = min(5.0, r.profit_factor if r.profit_factor != float("inf") else 4.5)
-    return float(
-        pf * 3.5
-        + r.expectancy * 6.0
-        + (r.winrate - 45.0) / 15.0
-        + (r.filled_trades / max(1, r.total_signals)) * 1.5
-        - r.max_dd_r * 0.15
-        + min(r.sharpe, 3.0) * 0.8
-    )
-
-
-def run_tuner(df_m15, df_h1=None, df_h4=None):
-    conf_r = [60.0, 65.0, 70.0, 75.0]
-    prec_r = [65.0, 70.0, 75.0, 80.0]
-    grade_r = ["A", "A++", "A Super"]
-
-    split = int(len(df_m15) * 0.70)
-    tr, va = df_m15.iloc[:split], df_m15.iloc[split:]
-
-    cands = []
-    for cf, pc, gr in itertools.product(conf_r, prec_r, grade_r):
-        try:
-            rt = run_backtest(tr, df_h1, df_h4, cf, pc, gr)
-            ft = _fitness(rt)
-            if ft <= 0:
-                continue
-            rv = run_backtest(va, df_h1, df_h4, cf, pc, gr)
-            fv = _fitness(rv, 5)
-            robust = ft * 0.4 + fv * 0.6
-            cands.append({
-                "params": {"min_confluence": cf, "min_precision": pc,
-                           "min_grade": gr},
-                "score": robust,
-                "val_wr": rv.winrate,
-                "val_pf": rv.profit_factor,
-            })
-        except Exception:
-            continue
-
-    if not cands:
-        best = {"min_confluence": 65.0, "min_precision": 70.0, "min_grade": "A"}
-        meta = None
-    else:
-        cands.sort(key=lambda x: -x["score"])
-        best = cands[0]["params"]
-        meta = cands[0]
-
-    save_json_safe(TUNER_FILE, {"params": best,
-                                "updated": datetime.datetime.now().isoformat()})
-    return best, meta
-
-
 def save_json_safe(path: str, data):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
@@ -613,13 +540,9 @@ def save_json_safe(path: str, data):
     os.replace(tmp, path)
 
 
-# =============================================================================
-# ZIP BUILDER
-# =============================================================================
 def build_zip():
     out = "xauusd-agi.zip"
-    exclude_dirs = {".git", "__pycache__", ".state_cache", "node_modules",
-                    ".venv", "venv", ".pytest_cache"}
+    exclude_dirs = {".git", "__pycache__", ".state_cache", "node_modules", ".venv", "venv", ".pytest_cache"}
     exclude_ext = {".pyc", ".pyo", ".zip", ".png"}
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for root, dirs, files in os.walk("."):
@@ -633,11 +556,11 @@ def build_zip():
 
 
 # =============================================================================
-# ORCHESTRATION
+# ORCHESTRATION MAIN CLI
 # =============================================================================
 def main_scan_once() -> int:
     log.info("=" * 60)
-    log.info("XAUUSD AGI v35.0 SCAN")
+    log.info("XAUUSD AGI v35.1 SCAN (TF: M30 & H1)")
     log.info("=" * 60)
     init_db()
 
@@ -649,10 +572,10 @@ def main_scan_once() -> int:
             positions_cb=positions_report,
         )
     except Exception as e:
-        log.debug(f"TG poll: {e}")
+        log.debug(f"TG poll error: {e}")
 
     if is_paused() and not CFG.force_run:
-        log.info("Paused.")
+        log.info("System currently paused by operator.")
         return 0
 
     rc = run_scan(force=CFG.force_run)
@@ -694,23 +617,12 @@ def main():
         print(positions_report())
         return
     if args.cmd == "backtest":
-        _, _, _, m15, h1, h4 = get_data(CFG.symbol_mt5, CFG.symbol_deriv,
-                                        CFG.yahoo_ticker)
-        r = run_backtest(m15, h1, h4, CFG.min_confluence, CFG.min_precision,
-                         CFG.min_grade)
-        print(f"Trades: {r.filled_trades} | WR {r.winrate}% | PF {r.profit_factor} | "
-              f"Exp {r.expectancy} | MaxDD {r.max_dd_r}R | Sharpe {r.sharpe}")
-        return
-    if args.cmd == "tune":
-        _, _, _, m15, h1, h4 = get_data(CFG.symbol_mt5, CFG.symbol_deriv,
-                                        CFG.yahoo_ticker)
-        best, meta = run_tuner(m15, h1, h4)
-        print(f"Best: {best}")
-        if meta:
-            print(f"Val WR: {meta['val_wr']}% | Val PF: {meta['val_pf']}")
+        _, _, _, m30, h1, h4 = get_data(CFG.symbol_mt5, CFG.symbol_deriv, CFG.yahoo_ticker)
+        r = run_backtest(m30, h1, h4, CFG.min_confluence, CFG.min_precision, CFG.min_grade)
+        print(f"Trades: {r.filled_trades} | WR {r.winrate}% | PF {r.profit_factor} | Exp {r.expectancy} | MaxDD {r.max_dd_r}R | Sharpe {r.sharpe}")
         return
     if args.cmd == "loop":
-        log.info(f"Loop mode. Interval {CFG.interval}s")
+        log.info(f"Loop mode active. Interval: {CFG.interval}s")
         while True:
             try:
                 main_scan_once()
@@ -718,7 +630,7 @@ def main():
                 log.info("Interrupted by user.")
                 break
             except Exception as e:
-                log.error(f"Scan error: {e}")
+                log.error(f"Loop scan error: {e}")
             time.sleep(CFG.interval)
         return
 
