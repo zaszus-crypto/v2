@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import pytz
 from datetime import datetime
+from typing import Optional
 
 WIB = pytz.timezone("Asia/Jakarta")
 
@@ -39,14 +40,9 @@ def fetch_yahoo_data(ticker: str = "GC=F") -> Optional[pd.DataFrame]:
 def fetch_alternative_gold_api() -> Optional[pd.DataFrame]:
     """Sumber cadangan 1: Mengambil data spot emas gratis dari API publik alternatif."""
     try:
-        # Contoh menggunakan endpoint publik bebas kunci untuk data komoditas/forex
-        url = "https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=usd" # Dummy or free forex alternative endpoints
-        # Atau kita bisa gunakan open exchanger rates / frankfurter untuk mata uang/logam
         res = requests.get("https://api.frankfurter.app/latest?from=USD&to=XAU", timeout=5)
         if res.status_code == 200:
-            # Jika endpoint merespon, kita buat struktur dataframe tiruan berbasis harga spot real-time
             data = res.json()
-            # Handle data jika tersedia
         return None
     except Exception:
         return None
@@ -61,21 +57,17 @@ def get_data(symbol_mt5: str, symbol_deriv: str, yahoo_ticker: str, yahoo_auto: 
     df_raw = None
     source_name = "None"
     
-    # Percobaan 1: Coba ambil dari Yahoo Finance sebagai sumber utama publik
     if yahoo_auto or yahoo_fallback:
         df_raw = fetch_yahoo_data(yahoo_ticker)
         if df_raw is not None and not df_raw.empty:
             source_name = "Yahoo-Public-Feed"
 
-    # Percobaan 2: Jika Yahoo gagal, coba sumber alternatif lain (bisa dikustomisasi ke API gratis lain)
     if df_raw is None or df_raw.empty:
         df_raw = fetch_alternative_gold_api()
         if df_raw is not None and not df_raw.empty:
             source_name = "Alternative-Spot-API"
 
-    # Jika semua gagal, buat fallback data sintetis darurat agar bot tidak crash di GitHub Actions
     if df_raw is None or df_raw.empty:
-        # Buat dummy dataframe stabil berdasarkan waktu saat ini
         dates = pd.date_range(end=datetime.now(), periods=200, freq="30min")
         df_raw = pd.DataFrame({
             "open": [4200.0] * 200,
@@ -89,7 +81,6 @@ def get_data(symbol_mt5: str, symbol_deriv: str, yahoo_ticker: str, yahoo_auto: 
     current_price = float(df_raw["close"].iloc[-1])
     offset = 0.0
 
-    # Resample ke Timeframe M30, H1, H4
     df_m30 = df_raw.copy()
     df_h1 = df_raw.resample("1h").agg({
         "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
@@ -101,9 +92,6 @@ def get_data(symbol_mt5: str, symbol_deriv: str, yahoo_ticker: str, yahoo_auto: 
     return source_name, offset, current_price, df_m30, df_h1, df_h4
 
 
-# =============================================================================
-# INTEGRASI TELEGRAM & PENDUKUNG LAINNYA
-# =============================================================================
 def send_text(token: str, message: str, chats: list):
     for chat_id in chats:
         try:
