@@ -32,10 +32,9 @@ class Config:
     log_level: str = "INFO"
     log_dir: str = "logs"
     state_dir: str = ".state_cache"
-    tg_token: str = os.getenv("TG_TOKEN", "")
-    tg_chats: list = field(default_factory=lambda: field_parse_chats(os.getenv("TG_CHATS", "")))
-    tg_users: list = field(default_factory=lambda: field_parse_users(os.getenv("TG_USERS", "")))
-    gemini_key: str = os.getenv("GEMINI_KEY", "")
+    tg_token: str = os.getenv("TG_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+    tg_chats: list = field(default_factory=lambda: field_parse_chats(os.getenv("TG_CHATS", "") or os.getenv("TELEGRAM_CHAT_ID", "")))
+    gemini_key: str = os.getenv("GEMINI_KEY", "") or os.getenv("GEMINI_API_KEY", "")
     gemini_model: str = "gemini-2.5-flash"
     healthcheck: str = os.getenv("HEALTHCHECK_URL", "")
     account_equity: float = float(os.getenv("ACCOUNT_EQUITY", "10000.0"))
